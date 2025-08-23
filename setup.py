@@ -6,12 +6,12 @@ with open("README.md", "r") as fh:
 setuptools.setup(
     name="creality_k1_api",
     version="0.0.1",
-    author="Your Name",
-    author_email="your@email.com",
+    author="hurricaneb",
+    author_email="hurricaneb@gmail.com",
     description="A Python API for the Creality K1 3D printer",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/your_username/creality_k1_api",
+    url="https://github.com/hurricaneb/creality_k1_api",
     packages=setuptools.find_packages(),
     classifiers=[
         "Programming Language :: Python :: 3",
