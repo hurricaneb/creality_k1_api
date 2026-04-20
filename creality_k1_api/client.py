@@ -49,26 +49,24 @@ class CrealityK1Client:
         try:
             self.ws = await asyncio.wait_for(websockets.connect(self.url, ping_interval=None, ping_timeout=None), timeout=WS_OPERATION_TIMEOUT)
             self._is_connected = True
-            _LOGGER.info(f"Connected to {self.url}")
+            _LOGGER.info("Connected to %s", self.url)
             self.heartbeat_task = asyncio.create_task(self.send_heartbeat())
             self.receive_task = asyncio.create_task(self.receive_messages())
-        except (
-            OSError # Network errors, e.g., Connection Refused
-            ) as e:
+        except OSError as e: # Network errors, e.g., Connection Refused
             # This is the usual exception if the printer is powered off
             # so don't flood the logs unless debugging is turned on
-            self._is_connected = False # Ensure status is False
-            _LOGGER.debug(f"Failed to connect to WebSocket: {e}")
+            self._is_connected = False
+            _LOGGER.debug("Failed to connect to WebSocket: %s", e)
         except (
             websockets.exceptions.ConnectionClosed,
             websockets.exceptions.InvalidURI,
             asyncio.TimeoutError
-            ) as e:
-            self._is_connected = False # Ensure status is False
-            _LOGGER.warning(f"Failed to connect to WebSocket: {e}")
+        ) as e:
+            self._is_connected = False
+            _LOGGER.warning("Failed to connect to WebSocket: %s", e)
         except Exception as e:
             self._is_connected = False
-            _LOGGER.exception(f"Unhandled error during WebSocket connection: {e}")
+            _LOGGER.exception("Unhandled error during WebSocket connection: %s", e)
 
     async def send_heartbeat(self) -> None:
         """Send a heartbeat message to the server periodically."""
@@ -76,8 +74,10 @@ class CrealityK1Client:
             while self.is_connected:
                 await self.send_message({"ModeCode": MSG_TYPE_HEARTBEAT, "msg": time.time()})
                 await asyncio.sleep(HEARTBEAT_INTERVAL)
+        except asyncio.CancelledError:
+            pass  # Expected upon disconnect
         except Exception as e:
-            _LOGGER.error(f"Error sending heartbeat: {e}")
+            _LOGGER.error("Error sending heartbeat: %s", e)
             await self.disconnect()
 
     async def receive_messages(self) -> None:
@@ -90,18 +90,30 @@ class CrealityK1Client:
                         break  # Break the loop to disconnect
                     await self.handle_message(message)
                 except websockets.exceptions.ConnectionClosedOK:
-                    _LOGGER.info("Connection closed by server")
+                    _LOGGER.debug("Connection closed by server")
+                    break  # Break the loop to disconnect
+                except asyncio.TimeoutError:
+                    _LOGGER.warning("Timeout receiving message")
                     break  # Break the loop to disconnect
                 except Exception as e:
-                    _LOGGER.error(f"Error receiving message: {e}")
+                    _LOGGER.error("Error receiving message: %s", e)
                     break  # Break the loop to disconnect
+        except asyncio.CancelledError:
+            pass  # Expected upon disconnect
         finally:
             await self.disconnect()
 
-    async def handle_message(self, message: str) -> None:
+    async def handle_message(self, message: str | bytes) -> None:
         """Process a received message."""
+        if isinstance(message, bytes):
+            try:
+                message = message.decode("utf-8")
+            except UnicodeDecodeError:
+                _LOGGER.warning("Received invalid UTF-8 bytes message")
+                return
+
         # Log RAW data in DEBUG-mode
-        _LOGGER.debug(f"Raw message received: {message}")
+        _LOGGER.debug("Raw message received: %s", message)
         if message.strip().lower() == "ok":
             _LOGGER.debug("Received 'ok' acknowledgment.")
             # We don't need to do anything more so we stop here
@@ -109,7 +121,7 @@ class CrealityK1Client:
         # If not "ok", try it as JSON
         try:
             data = json.loads(message)
-            _LOGGER.debug(f"Received Parsed JSON: {data}")
+            _LOGGER.debug("Received Parsed JSON: %s", data)
             # Check if it is HEARTBEAT message
             if data.get("ModeCode") == MSG_TYPE_HEARTBEAT:
                 _LOGGER.debug("Received heartbeat response")
@@ -119,37 +131,45 @@ class CrealityK1Client:
             self.new_data_callback(data)
         except json.JSONDecodeError:
             # Log if it is not JSON and not "ok" message
-            _LOGGER.warning(f"Invalid JSON received (and not 'ok'): {message}")
+            _LOGGER.warning("Invalid JSON received (and not 'ok'): %s", message)
         except Exception as e:
-            _LOGGER.error(f"Error handling non-JSON message '{message}': {e}")
+            _LOGGER.error("Error handling non-JSON message '%s': %s", message, e)
 
     async def send_message(self, message: dict) -> None:
         """Send a message to the WebSocket server."""
         try:
             if self.is_connected:
-                await asyncio.wait_for(self.ws.send(json.dumps(message)), timeout=WS_OPERATION_TIMEOUT)
-                _LOGGER.debug(f"Sent: {message}")
+                payload = json.dumps(message)
+                await asyncio.wait_for(self.ws.send(payload), timeout=WS_OPERATION_TIMEOUT)
+                _LOGGER.debug("Sent: %s", message)
             else:
-                _LOGGER.warning("WebSocket connection is not active could not send message")
+                _LOGGER.warning("WebSocket connection is not active, could not send message")
         except Exception as e:
-            _LOGGER.error(f"Error sending message: {e}")
+            _LOGGER.error("Error sending message: %s", e)
             await self.disconnect()
 
     async def disconnect(self) -> None:
         """Close the WebSocket connection and cleanup."""
         if not self._is_disconnecting:
             self._is_disconnecting = True
+            
+            current_task = asyncio.current_task()
+            
             # Make sure system is not trying to connect
-            if self._connect_task and not self._connect_task.done():
+            if self._connect_task and not self._connect_task.done() and self._connect_task is not current_task:
                 self._connect_task.cancel()
             self._connect_task = None
+            
             self._is_connected = False
-            if self.heartbeat_task:
+            
+            if self.heartbeat_task and not self.heartbeat_task.done() and self.heartbeat_task is not current_task:
                 self.heartbeat_task.cancel()
-                self.heartbeat_task = None
-            if self.receive_task:
+            self.heartbeat_task = None
+            
+            if self.receive_task and not self.receive_task.done() and self.receive_task is not current_task:
                 self.receive_task.cancel()
-                self.receive_task = None
+            self.receive_task = None
+            
             if self.ws:
                 try:
                     # Attempt to close cleanly, with a timeout
@@ -157,7 +177,7 @@ class CrealityK1Client:
                 except asyncio.TimeoutError:
                     _LOGGER.warning("Timeout during WebSocket close. Connection may not have closed cleanly.")
                 except Exception as e:
-                    _LOGGER.warning(f"Error during WebSocket close: {e}")
+                    _LOGGER.warning("Error during WebSocket close: %s", e)
                 finally:
                     self.ws = None
             _LOGGER.info("WebSocket connection closed.")
