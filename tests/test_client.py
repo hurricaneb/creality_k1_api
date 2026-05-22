@@ -163,7 +163,7 @@ class TestCrealityK1Client(unittest.IsolatedAsyncioTestCase):
 
     def test_parse_timelapse_list(self):
         """Test parsing of timelapse list and URL generation."""
-        self.client.url = "ws://192.168.10.161:9999"
+        self.client.url = "ws://192.168.1.100:9999"
         raw_list = [
             {"videoname": "1764698892.mp4", "gcodename": "print1.gcode"},
             "invalid_item",
@@ -173,13 +173,13 @@ class TestCrealityK1Client(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(parsed), 2)
         self.assertEqual(parsed[0], {
             "gcode": "print1.gcode",
-            "url": "http://192.168.10.161/downloads/video/1764698892.mp4",
+            "url": "http://192.168.1.100/downloads/video/1764698892.mp4",
             "timestamp": 1764698892,
             "start_time": "2025-12-02T18:08:12+00:00"
         })
         self.assertEqual(parsed[1], {
             "gcode": "print2.gcode",
-            "url": "http://192.168.10.161/downloads/video/1764329325_elapse.mp4",
+            "url": "http://192.168.1.100/downloads/video/1764329325_elapse.mp4",
             "timestamp": 1764329325,
             "start_time": "2025-11-28T11:28:45+00:00"
         })

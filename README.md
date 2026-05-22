@@ -24,7 +24,7 @@ def on_new_data(data: dict):
 
 async def main():
     # K1 WebSocket uses port 9999 by default
-    client = CrealityK1Client("ws://192.168.10.161:9999", on_new_data)
+    client = CrealityK1Client("ws://192.168.1.100:9999", on_new_data)
     
     await client.connect()
     
@@ -46,7 +46,7 @@ import asyncio
 from creality_k1_api import CrealityK1Client
 
 async def main():
-    client = CrealityK1Client("ws://192.168.10.161:9999", lambda data: None)
+    client = CrealityK1Client("ws://192.168.1.100:9999", lambda data: None)
     
     await client.connect()
     
@@ -69,6 +69,6 @@ if __name__ == "__main__":
 
 Each timelapse item in the returned list contains:
 * `gcode`: The name of the Gcode file that was printed (e.g. `Cover_PLA.gcode`).
-* `url`: The full HTTP download URL for the `.mp4` video (e.g. `http://192.168.10.161/downloads/video/1764698892.mp4`).
+* `url`: The full HTTP download URL for the `.mp4` video (e.g. `http://192.168.1.100/downloads/video/1764698892.mp4`).
 * `timestamp`: The Unix timestamp when the print job started (extracted from the filename, e.g. `1764698892`).
 * `start_time`: The ISO-8601 UTC formatted datetime representation of the start time (e.g. `2025-12-02T18:08:12+00:00`).
