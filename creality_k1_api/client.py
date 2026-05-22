@@ -5,12 +5,13 @@ import json
 import logging
 import time
 from typing import Callable
+from urllib.parse import urlparse
 
 _LOGGER = logging.getLogger(__name__)
 
-# WebSocket-relaterade konstanter
-MSG_TYPE_HEARTBEAT = "heart_beat"  # Hjärtslagsmeddelande
-HEARTBEAT_INTERVAL = 5  # Sekunder
+# WebSocket-related constants
+MSG_TYPE_HEARTBEAT = "heart_beat"  # Heartbeat message
+HEARTBEAT_INTERVAL = 5  # Seconds
 WS_OPERATION_TIMEOUT = 10 # seconds
 
 class CrealityK1Client:
@@ -30,6 +31,7 @@ class CrealityK1Client:
         self._is_connected = False
         self._connect_task = None
         self._is_disconnecting = False
+        self._pending_timelapse_futures = []
 
     @property
     def is_connected(self) -> bool:
@@ -129,6 +131,16 @@ class CrealityK1Client:
                 return
             # If it is JSON and not heartbeat, process the new data using callback
             self.new_data_callback(data)
+
+            # Check for timelapse video list
+            video_list = self._find_elapse_video_list(data)
+            if video_list is not None:
+                parsed_videos = self._parse_timelapse_list(video_list)
+                # Resolve any pending futures
+                while self._pending_timelapse_futures:
+                    fut = self._pending_timelapse_futures.pop(0)
+                    if not fut.done():
+                        fut.set_result(parsed_videos)
         except json.JSONDecodeError:
             # Log if it is not JSON and not "ok" message
             _LOGGER.warning("Invalid JSON received (and not 'ok'): %s", message)
@@ -182,3 +194,92 @@ class CrealityK1Client:
                     self.ws = None
             _LOGGER.info("WebSocket connection closed.")
             self._is_disconnecting = False
+
+    def _find_elapse_video_list(self, data: dict) -> list | None:
+        """Recursively search for elapseVideoList key in data."""
+        if "elapseVideoList" in data:
+            return data["elapseVideoList"]
+        if "result" in data and isinstance(data["result"], dict):
+            if "elapseVideoList" in data["result"]:
+                return data["result"]["elapseVideoList"]
+        return None
+
+    def _parse_timelapse_list(self, video_list: list) -> list[dict]:
+        """Parse the raw video list and generate download URLs."""
+        try:
+            parsed_url = urlparse(self.url)
+            host = parsed_url.hostname
+            if not host:
+                host = self.url.split("://")[-1].split(":")[0]
+        except Exception:
+            host = "localhost"
+
+        import re
+        from datetime import datetime, timezone
+
+        video_urls = []
+        for video in video_list:
+            if not isinstance(video, dict):
+                continue
+            filename = video.get("videoname")
+            gcode = video.get("gcodename")
+            if filename:
+                url = f"http://{host}/downloads/video/{filename}"
+                item = {"gcode": gcode, "url": url}
+
+                # Attempt to extract start timestamp from filename prefix (Unix timestamp)
+                match = re.match(r"^(\d+)", filename)
+                if match:
+                    try:
+                        ts = int(match.group(1))
+                        item["timestamp"] = ts
+                        # Convert to UTC ISO-8601 string
+                        dt = datetime.fromtimestamp(ts, timezone.utc)
+                        item["start_time"] = dt.isoformat()
+                    except Exception:
+                        pass
+                
+                video_urls.append(item)
+        return video_urls
+
+    async def request_timelapses(self) -> None:
+        """Send a request to the printer to get the list of timelapses (response via callback)."""
+        await self.send_message({
+            "method": "get",
+            "params": {
+                "reqGcodeFile": 1,
+                "reqGcodeList": 1,
+                "reqHistory": 1,
+                "reqElapseVideoList": 1,
+                "reqPrintObjects": 1,
+                "reqMaterialBoxsInfo": 1,
+                "boxsInfo": 1,
+                "reqMaterials": 1,
+                "boxConfig": {}
+            }
+        })
+
+    async def get_timelapses(self, timeout: float = WS_OPERATION_TIMEOUT) -> list[dict]:
+        """Get the list of timelapse videos from the printer."""
+        if not self.is_connected:
+            await self.connect()
+            if not self.is_connected:
+                _LOGGER.warning("Could not connect to printer to fetch timelapses")
+                return []
+
+        future = asyncio.get_running_loop().create_future()
+        self._pending_timelapse_futures.append(future)
+
+        try:
+            await self.request_timelapses()
+            video_list = await asyncio.wait_for(future, timeout=timeout)
+            return video_list
+        except asyncio.TimeoutError:
+            _LOGGER.warning("Timeout waiting for timelapse list response")
+            return []
+        except Exception as e:
+            _LOGGER.exception("Error fetching timelapse list: %s", e)
+            return []
+        finally:
+            if future in self._pending_timelapse_futures:
+                self._pending_timelapse_futures.remove(future)

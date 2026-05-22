@@ -147,6 +147,104 @@ class TestCrealityK1Client(unittest.IsolatedAsyncioTestCase):
 
         await self.client.disconnect()
 
+    def test_find_elapse_video_list(self):
+        """Test finding elapseVideoList in different payload formats."""
+        # Top-level list
+        data1 = {"elapseVideoList": [{"videoname": "1.mp4"}]}
+        self.assertEqual(self.client._find_elapse_video_list(data1), [{"videoname": "1.mp4"}])
+
+        # Nested in result
+        data2 = {"result": {"elapseVideoList": [{"videoname": "2.mp4"}]}}
+        self.assertEqual(self.client._find_elapse_video_list(data2), [{"videoname": "2.mp4"}])
+
+        # Missing
+        data3 = {"result": {}}
+        self.assertIsNone(self.client._find_elapse_video_list(data3))
+
+    def test_parse_timelapse_list(self):
+        """Test parsing of timelapse list and URL generation."""
+        self.client.url = "ws://192.168.10.161:9999"
+        raw_list = [
+            {"videoname": "1764698892.mp4", "gcodename": "print1.gcode"},
+            "invalid_item",
+            {"videoname": "1764329325_elapse.mp4", "gcodename": "print2.gcode"}
+        ]
+        parsed = self.client._parse_timelapse_list(raw_list)
+        self.assertEqual(len(parsed), 2)
+        self.assertEqual(parsed[0], {
+            "gcode": "print1.gcode",
+            "url": "http://192.168.10.161/downloads/video/1764698892.mp4",
+            "timestamp": 1764698892,
+            "start_time": "2025-12-02T18:08:12+00:00"
+        })
+        self.assertEqual(parsed[1], {
+            "gcode": "print2.gcode",
+            "url": "http://192.168.10.161/downloads/video/1764329325_elapse.mp4",
+            "timestamp": 1764329325,
+            "start_time": "2025-11-28T11:28:45+00:00"
+        })
+
+    @patch('creality_k1_api.client.websockets.connect', new_callable=AsyncMock)
+    async def test_get_timelapses_success(self, mock_connect):
+        """Test successfully retrieving timelapse list through get_timelapses."""
+        mock_ws = AsyncMock()
+        # Mock connection success
+        mock_ws.recv.side_effect = self.never_set_event.wait
+        mock_connect.return_value = mock_ws
+        await self.client.connect()
+
+        # Call get_timelapses in a task so we can trigger the response
+        get_task = asyncio.create_task(self.client.get_timelapses())
+        
+        # Give the event loop a tick to process
+        await asyncio.sleep(0.01)
+
+        # Verify request_timelapses payload was sent
+        expected_payload = {
+            "method": "get",
+            "params": {
+                "reqGcodeFile": 1,
+                "reqGcodeList": 1,
+                "reqHistory": 1,
+                "reqElapseVideoList": 1,
+                "reqPrintObjects": 1,
+                "reqMaterialBoxsInfo": 1,
+                "boxsInfo": 1,
+                "reqMaterials": 1,
+                "boxConfig": {}
+            }
+        }
+        mock_ws.send.assert_any_await(json.dumps(expected_payload))
+
+        # Simulate receiving the response
+        response = {
+            "elapseVideoList": [
+                {"videoname": "video.mp4", "gcodename": "file.gcode"}
+            ]
+        }
+        await self.client.handle_message(json.dumps(response))
+
+        result = await get_task
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["gcode"], "file.gcode")
+        self.assertEqual(result[0]["url"], "http://localhost/downloads/video/video.mp4")
+
+        await self.client.disconnect()
+
+    @patch('creality_k1_api.client.websockets.connect', new_callable=AsyncMock)
+    async def test_get_timelapses_timeout(self, mock_connect):
+        """Test get_timelapses timeout returns empty list."""
+        mock_ws = AsyncMock()
+        mock_ws.recv.side_effect = self.never_set_event.wait
+        mock_connect.return_value = mock_ws
+        await self.client.connect()
+
+        # Call get_timelapses with a tiny timeout
+        result = await self.client.get_timelapses(timeout=0.01)
+        self.assertEqual(result, [])
+
+        await self.client.disconnect()
+
 
 if __name__ == '__main__':
     unittest.main()
